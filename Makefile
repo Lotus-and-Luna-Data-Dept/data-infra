@@ -1,28 +1,53 @@
-VM=hetzner-data-vm
-REMOTE_DIR=~/data-infra
-RSYNC=rsync -av --delete --exclude '.git'
+# ---- data-infra / Makefile (VM-local, MinIO only) ----
+# Model: pull -> up. CI later will just: make deploy
+# Run these on the VM from the repo root (/srv/data-infra).
 
-sync:
-	$(RSYNC) ./ $(VM):$(REMOTE_DIR)/
+BRANCH   ?= main
+COMPOSE  := compose/minio/docker-compose.yml
+ENVFILE  := compose/minio/.env.prod
+MC_IMAGE := minio/mc:latest
 
-vm_init_dirs:
-	ssh $(VM) 'sudo mkdir -p /opt/data/minio/{data,config} && sudo chown -R $$USER:$$USER /opt/data/minio'
+## update working tree to the desired branch
+pull:
+	git fetch origin $(BRANCH)
+	git checkout $(BRANCH)
+	git pull --ff-only origin $(BRANCH)
 
-deploy_minio:
-	ssh $(VM) 'cd $(REMOTE_DIR)/compose/minio && docker compose --env-file .env.prod up -d'
-	ssh $(VM) 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"'
+## first-time VM prep for MinIO data dirs (idempotent)
+bootstrap:
+	sudo mkdir -p /opt/data/minio/{data,config}
+	sudo chown -R $$(whoami):$$(whoami) /opt/data/minio
 
-minio_bucket:
-	ssh $(VM) 'cd $(REMOTE_DIR)/compose/minio && \
-	  docker run --rm --network host \
-	  -e MC_HOST_local=$$(printf "http://%s:%s@%s:9000" "$$(grep ^MINIO_ROOT_USER .env.prod|cut -d= -f2)" "$$(grep ^MINIO_ROOT_PASSWORD .env.prod|cut -d= -f2)" "$$(grep ^MINIO_BIND_IP .env.prod|cut -d= -f2)") \
-	  quay.io/minio/mc:RELEASE.2025-02-18T17-00-00Z mb -p local/$$(grep ^S3_BUCKET .env.prod|cut -d= -f2) || true'
+## start / update MinIO
+up:
+	docker compose -f $(COMPOSE) --env-file $(ENVFILE) up -d
+	docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 
-minio_status:
-	ssh $(VM) 'cd $(REMOTE_DIR)/compose/minio && \
-	  docker run --rm --network host \
-	  -e MC_HOST_local=$$(printf "http://%s:%s@%s:9000" "$$(grep ^MINIO_ROOT_USER .env.prod|cut -d= -f2)" "$$(grep ^MINIO_ROOT_PASSWORD .env.prod|cut -d= -f2)" "$$(grep ^MINIO_BIND_IP .env.prod|cut -d= -f2)") \
-	  quay.io/minio/mc:RELEASE.2025-02-18T17-00-00Z ls local/'
+## stop MinIO
+down:
+	docker compose -f $(COMPOSE) --env-file $(ENVFILE) down
 
-vm_open_private_ports:
-	ssh $(VM) 'sudo ufw allow from 10.0.0.0/16 to any port 9000 proto tcp; sudo ufw allow from 10.0.0.0/16 to any port 9001 proto tcp; sudo ufw status'
+## create the bucket named in .env.prod (safe to re-run)
+bucket:
+	docker run --rm --network host \
+	  -e MC_HOST_local=$$(printf "http://%s:%s@%s:9000" \
+	    "$$(grep ^MINIO_ROOT_USER $(ENVFILE) | cut -d= -f2)" \
+	    "$$(grep ^MINIO_ROOT_PASSWORD $(ENVFILE) | cut -d= -f2)" \
+	    "$$(grep ^MINIO_BIND_IP $(ENVFILE) | cut -d= -f2)") \
+	  $(MC_IMAGE) mb -p local/$$(grep ^S3_BUCKET $(ENVFILE) | cut -d= -f2) || true
+
+## list buckets (quick sanity check)
+status:
+	docker run --rm --network host \
+	  -e MC_HOST_local=$$(printf "http://%s:%s@%s:9000" \
+	    "$$(grep ^MINIO_ROOT_USER $(ENVFILE) | cut -d= -f2)" \
+	    "$$(grep ^MINIO_ROOT_PASSWORD $(ENVFILE) | cut -d= -f2)" \
+	    "$$(grep ^MINIO_BIND_IP $(ENVFILE) | cut -d= -f2)") \
+	  $(MC_IMAGE) ls local/ || true
+
+## tail recent logs for the minio service
+logs:
+	docker compose -f $(COMPOSE) --env-file $(ENVFILE) logs --tail=200 minio || true
+
+## one-shot deploy used by humans and CI later
+deploy: pull up

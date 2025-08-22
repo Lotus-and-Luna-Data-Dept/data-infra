@@ -1,8 +1,8 @@
 services:
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-18T16-00-00Z
-    env_file: .env.prod
+    image: minio/minio:latest
     command: server --console-address ":9001" /data
+    env_file: .env.prod
     volumes:
       - /opt/data/minio/data:/data
       - /opt/data/minio/config:/root/.minio
