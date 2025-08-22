@@ -1,0 +1,12 @@
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-18T16-00-00Z
+    env_file: .env.prod
+    command: server --console-address ":9001" /data
+    volumes:
+      - /opt/data/minio/data:/data
+      - /opt/data/minio/config:/root/.minio
+    ports:
+      - "${MINIO_BIND_IP}:9000:9000"
+      - "${MINIO_BIND_IP}:9001:9001"
+    restart: unless-stopped
